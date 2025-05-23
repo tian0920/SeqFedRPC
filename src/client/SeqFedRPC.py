@@ -1,12 +1,10 @@
 import pickle
 from argparse import Namespace
-from collections import OrderedDict
 from copy import deepcopy
 from typing import Dict, List, Tuple, Union
 from pathlib import Path
 
 import torch, csv
-import random
 from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 from sklearn.cluster import KMeans
@@ -17,12 +15,10 @@ from src.config.utils import trainable_params, evalutate_model, Logger, evalutat
 from src.config.models import DecoupledModel
 from data.utils.constants import MEAN, STD
 from data.utils.datasets import DATASETS
-import numpy as np
 import matplotlib.pyplot as plt
 from collections import OrderedDict
 import os
 import json
-from sklearn.mixture import GaussianMixture  # 引入高斯混合聚类
 
 
 class FedAvgClient:
@@ -38,7 +34,6 @@ class FedAvgClient:
         self.client_id: int = None
         self.assignment_mask = None  # 用于记录掩码
         self.fixed_epoch = 1
-        # self.mid_epoch_end = 110
         self.sample_ratio = 0
         self.grad_means = []  # 用于存储每轮梯度均值
 
@@ -262,67 +257,10 @@ class FedAvgClient:
             self.opt_state_dict.get(self.client_id, self.init_opt_state_dict)
         )
 
-        # if self.current_epoch < self.fixed_epoch:
-        #     self.model.load_state_dict(new_parameters, strict=False)
-        # # personal params would overlap the dummy params from new_parameters from the same layers
-        # else:
-        #     updated_parameters = self.update_parameters(self.old_parameters, new_parameters)
-        #     self.model.load_state_dict(updated_parameters, strict=False)
-
         updated_parameters = self.update_parameters(self.old_parameters, new_parameters)
         self.model.load_state_dict(updated_parameters, strict=False)
 
-#########这是最初的代码
-    # def update_parameters(self, old_parameters, new_parameters):
-    #     # 创建一个新的字典来存储更新后的参数
-    #     updated_parameters = OrderedDict()
-    #
-    #     if self.current_epoch < 50 or self.current_epoch == 50:
-    #         # 用于存储所有的差值
-    #         all_diffs = []
-    #
-    #         # 遍历所有的参数，计算差值并存储
-    #         for (name_old, old_param), (name_new, new_param) in zip(old_parameters.items(), new_parameters.items()):
-    #             assert name_old == name_new, "参数名称不匹配"
-    #             # 计算差值并展平为一维
-    #             diff = torch.abs(old_param - new_param)
-    #             all_diffs.append(diff.view(-1))  # 展平张量为一维
-    #
-    #         # 合并所有展平的差值
-    #         all_diffs_combined = torch.cat(all_diffs)
-    #
-    #         # 计算前 10% 和后 10% 分位数，作为阈值
-    #         lower_threshold = torch.quantile(all_diffs_combined, self.lower_quantile)
-    #         upper_threshold = torch.quantile(all_diffs_combined, self.upper_quantile)
-    #
-    #         # 在第100轮时创建掩码
-    #         if self.current_epoch == 50:
-    #             self.assignment_mask = {}
-    #
-    #         # 遍历参数，使用已有的掩码或动态计算
-    #     for (name_old, old_param), (name_new, new_param) in zip(old_parameters.items(), new_parameters.items()):
-    #         if self.current_epoch < 50:
-    #             # 计算差值
-    #             diff = torch.abs(old_param - new_param)
-    #             # 动态生成掩码
-    #             mask = (diff < lower_threshold) | (diff > upper_threshold)
-    #         elif self.current_epoch == 50:
-    #             # 记录掩码
-    #             diff = torch.abs(old_param - new_param)
-    #             mask = (diff < lower_threshold) | (diff > upper_threshold)
-    #             self.assignment_mask[name_old] = mask
-    #         else:
-    #             # 使用之前记录的掩码
-    #             mask = self.assignment_mask[name_old]
-    #
-    #         # 根据掩码更新参数
-    #         updated_param = torch.where(mask, old_param, new_param)
-    #         updated_parameters[name_old] = updated_param
-    #
-    #     return updated_parameters
-
-
-    ###################################################  FedFew: 一次聚类为三类  + K-means ########################################################
+    ###################################################  SeqFedRPC: 一次聚类为三类  + K-means ########################################################
     def update_parameters(self, old_parameters, new_parameters):
         # 创建一个字典来存储更新后的参数
         updated_parameters = OrderedDict()
@@ -343,20 +281,8 @@ class FedAvgClient:
             for (name_old, old_param), (name_new, new_param) in zip(old_parameters.items(), new_parameters.items()):
                 assert name_old == name_new, "Parameter names do not match"
                 # Calculate the difference and flatten to 1D
-                ############ 1. 梯度 ############
                 diff = torch.abs(old_param - new_param)
                 all_diffs.append(diff.view(-1))  # Flatten tensor to 1D
-
-                ############# 2. fisher值 ############
-                # diff = torch.abs(old_param - new_param)
-                # modified_diff = diff ** 2  # fisher值
-                # all_diffs.append(modified_diff.view(-1))  # Flatten tensor to 1D
-                #
-                # ############ 3. importance 指标  ############
-                # theta = torch.abs(old_param)
-                # diff = torch.abs(old_param - new_param)
-                # modified_diff = diff * theta  # importance 指标
-                # all_diffs.append(modified_diff.view(-1))  # Flatten tensor to 1D
 
             # all_diffs_combined = torch.cat(all_diffs).cpu()  # Uncomment for histogram plotting
             # self._analyze_and_plot_distribution(all_diffs_combined)  # Optional plotting
@@ -378,8 +304,7 @@ class FedAvgClient:
                 return old_parameters
 
         # 聚类与掩码生成逻辑（仅执行一次）
-        if self.update_counter < self.fixed_epoch:
-        # if not self.clustering_done:
+        if not self.clustering_done:
             all_params_combined = []
             for name, param in old_parameters.items():
                 all_params_combined.append(param.view(-1))
@@ -448,7 +373,6 @@ class FedAvgClient:
 
         self.update_counter += 1  # 更新计数器
         return updated_parameters
-
 
 
     # ################################################## 两次聚类为2类 + 2类 + K-means  #######################################################
@@ -597,159 +521,6 @@ class FedAvgClient:
     #     return updated_parameters
 
 
-    ################################################## 两次聚类为2类 + 2类 + 高斯混合聚类  #######################################################
-    # def update_parameters(self, old_parameters, new_parameters):
-    #     # 创建一个字典来存储更新后的参数
-    #     updated_parameters = OrderedDict()
-    #     # 如果是第一次更新，只计算梯度并判断是否需要个性化训练
-    #     if not self.has_switched_to_personalized:
-    #         # 计算每轮梯度均值
-    #         all_grads = []
-    #         all_diffs = []
-    #         for (name_old, old_param), (name_new, new_param) in zip(old_parameters.items(), new_parameters.items()):
-    #             grad = new_param - old_param
-    #             grad_mean = torch.mean(torch.abs(grad)).item()
-    #             all_grads.append(grad_mean)
-    #
-    #         epoch_grad_mean = sum(all_grads) / len(all_grads)
-    #         self.grad_means.append(epoch_grad_mean)
-    #
-    #         for (name_old, old_param), (name_new, new_param) in zip(old_parameters.items(), new_parameters.items()):
-    #             assert name_old == name_new, "Parameter names do not match"
-    #             # Calculate the difference and flatten to 1D
-    #             ############# 1. 梯度 ############
-    #             # diff = torch.abs(old_param - new_param)
-    #             # all_diffs.append(diff.view(-1))  # Flatten tensor to 1D
-    #
-    #             ############# 2. fisher值 ############
-    #             # diff = torch.abs(old_param - new_param)
-    #             # modified_diff = diff ** 2  # fisher值
-    #             # all_diffs.append(modified_diff.view(-1))  # Flatten tensor to 1D
-    #
-    #             ############# 3. importance 指标  ############
-    #             theta = torch.abs(old_param)
-    #             diff = torch.abs(old_param - new_param)
-    #             modified_diff = diff * theta  # importance 指标
-    #             all_diffs.append(modified_diff.view(-1))  # Flatten tensor to 1D
-    #
-    #         all_diffs_combined = torch.cat(all_diffs).cpu()  # Uncomment for histogram plotting
-    #         self._analyze_and_plot_distribution(all_diffs_combined)  # Optional plotting
-    #
-    #         print(f"Update {self.update_counter}: Mean Gradient Value = {epoch_grad_mean:.6f}")
-    #
-    #         # 判断是否需要切换到个性化训练
-    #         if len(self.grad_means) > 1:
-    #             prev_grad_mean = self.grad_means[-2]
-    #             # 判断梯度变化
-    #             # if prev_grad_mean > 0 and abs(epoch_grad_mean / prev_grad_mean) > 3 or epoch_grad_mean > 0.001:
-    #             if prev_grad_mean > 0:
-    #                 print("Significant gradient change detected. Switching to personalized training mode.")
-    #                 self.has_switched_to_personalized = True
-    #             else:
-    #                 print("Performing standard training...")
-    #                 self.has_switched_to_personalized = False
-    #
-    #         # 如果没有切换到个性化训练，直接返回旧参数
-    #         if not self.has_switched_to_personalized:
-    #             return old_parameters
-    #
-    #     # 聚类与掩码生成逻辑（仅执行一次）
-    #     if not self.clustering_done:
-    #         self.clustering_done = True  # 标记聚类已完成
-    #         all_params_combined = []
-    #         for name, param in old_parameters.items():
-    #             all_params_combined.append(param.view(-1))
-    #
-    #         # 合并所有参数
-    #         all_params_combined = torch.cat(all_params_combined).cpu().numpy()
-    #
-    #         ### 第一次聚类 ###
-    #         # 使用高斯混合聚类 (GMM) 分为 2 类（小 和 大）
-    #         gmm_1 = GaussianMixture(n_components=2, random_state=0).fit(abs(all_params_combined).reshape(-1, 1))
-    #         labels_1 = gmm_1.predict(abs(all_params_combined).reshape(-1, 1))
-    #
-    #         # 确定第一次聚类中“小的类”
-    #         cluster_means_1 = gmm_1.means_.squeeze()
-    #         min_cluster_1 = cluster_means_1.argmin()  # 第一次聚类中最小的簇
-    #
-    #         # 第一次掩码：小的类被掩码覆盖
-    #         first_mask_indices = (labels_1 == min_cluster_1)
-    #
-    #         ### 第二次聚类 ###
-    #         # 从第一次聚类的“大类”中筛选参数
-    #         large_param_indices = (labels_1 != min_cluster_1)  # 非“小类”的索引
-    #         large_params = all_params_combined[large_param_indices]
-    #
-    #         # 再次使用高斯混合聚类 (GMM) 分为 2 类（小 和 大）
-    #         gmm_2 = GaussianMixture(n_components=2, random_state=0).fit(abs(large_params).reshape(-1, 1))
-    #         labels_2 = gmm_2.predict(abs(large_params).reshape(-1, 1))
-    #
-    #         # 确定第二次聚类中“大类”
-    #         cluster_means_2 = gmm_2.means_.squeeze()
-    #         max_cluster_2 = cluster_means_2.argmax()  # 第二次聚类中最大的簇
-    #
-    #         # 第二次掩码：在第一次“大类”中，标记出第二次聚类的“大类”
-    #         second_mask_indices = large_param_indices.copy()  # 基于第一次结果的索引
-    #         second_mask_indices[large_param_indices] = (labels_2 == max_cluster_2)  # 大类掩码
-    #
-    #         ### 合并两次掩码 ###
-    #         final_mask_indices = first_mask_indices | second_mask_indices  # 两次掩码取 OR
-    #
-    #         ################################################# 统计簇参数比例 ##################################################
-    #         # # 统计三个类别的参数数量
-    #         # total_params = len(all_params_combined)
-    #         # small_class_count = np.sum(first_mask_indices)  # 第一次聚类的小类数量
-    #         # large_class_count = np.sum(second_mask_indices)  # 第二次聚类的大类数量
-    #         # remaining_class_count = total_params - small_class_count - large_class_count  # 剩余的类数量
-    #         #
-    #         # # 计算比例
-    #         # small_class_ratio = small_class_count / total_params
-    #         # large_class_ratio = large_class_count / total_params
-    #         # remaining_class_ratio = remaining_class_count / total_params
-    #         #
-    #         # filename = "FedFew-2-importance-GS.csv"
-    #         # file_exists = os.path.isfile(filename)
-    #         # with open(filename, "a", newline='') as f:  # 使用 "a" 模式表示追加
-    #         #     writer = csv.writer(f)
-    #         #     # 写入表头（仅在文件不存在时写入一次）
-    #         #     if not file_exists:
-    #         #         writer.writerow(["Dataset", "Background", "Personalized", "Global"])
-    #         #     # 写入数据行
-    #         #     writer.writerow([self.dataset, f"{small_class_ratio:.4f}", f"{large_class_ratio:.4f}",
-    #         #                      f"{remaining_class_ratio:.4f}"])
-    #         # print("Cluster ratios appended to", filename)
-    #         ###############################################################################################################
-    #
-    #         # 生成掩码字典
-    #         self.assignment_mask = {}
-    #         start_idx = 0
-    #
-    #         for name, param in old_parameters.items():
-    #             param_flat = param.view(-1)
-    #             num_elements = param_flat.numel()
-    #
-    #             # 提取当前参数的掩码
-    #             mask = final_mask_indices[start_idx: start_idx + num_elements]
-    #             start_idx += num_elements
-    #
-    #             # 生成掩码并保存到字典中
-    #             self.assignment_mask[name] = torch.tensor(mask, dtype=torch.bool, device=param.device).view(param.shape)
-    #
-    #         print("Two-step clustering with Gaussian Mixture Model completed. Assignment mask generated.")
-    #
-    #     # 使用掩码更新参数
-    #     for name, (old_param, new_param) in zip(old_parameters.keys(),
-    #                                             zip(old_parameters.values(), new_parameters.values())):
-    #         mask = self.assignment_mask[name]
-    #         updated_param = torch.where(mask, old_param, new_param)
-    #         updated_parameters[name] = updated_param
-    #
-    #     self.update_counter += 1  # 更新计数器
-    #     return updated_parameters
-
-
-
-
     def _analyze_and_plot_distribution(self, all_diffs_combined):
         """计算最大值和最小值，等间隔划分区间，绘制分布图，并将结果保存至文件"""
 
@@ -811,199 +582,6 @@ class FedAvgClient:
         with open(json_path, "w") as f:
             json.dump(distribution_data, f, indent=4)
 
-    # def update_parameters(self, old_parameters, new_parameters):
-    #     # 创建一个新的字典来存储更新后的参数
-    #     updated_parameters = OrderedDict()
-    #
-    #     if self.current_epoch <= self.fixed_epoch:
-    #         # 用于存储所有的差值
-    #         all_diffs = []
-    #
-    #         # 遍历所有的参数，计算差值并存储
-    #         for (name_old, old_param), (name_new, new_param) in zip(old_parameters.items(), new_parameters.items()):
-    #             assert name_old == name_new, "参数名称不匹配"
-    #             # 计算差值并展平为一维
-    #             diff = torch.abs(old_param - new_param)
-    #             all_diffs.append(diff.view(-1))  # 展平张量为一维
-    #
-    #         # 合并所有展平的差值
-    #         all_diffs_combined = torch.cat(all_diffs).cpu()  # Move to CPU for histogram calculation
-    #
-    #         # 计算前 10% 和后 10% 分位数，作为阈值
-    #         lower_threshold = torch.quantile(all_diffs_combined, self.lower_quantile)
-    #         upper_threshold = torch.quantile(all_diffs_combined, self.upper_quantile)
-    #
-    #         # 在第100轮时创建掩码
-    #         if self.current_epoch == self.fixed_epoch:
-    #             self.assignment_mask = {}
-    #
-    #     # 遍历参数，使用已有的掩码或动态计算
-    #     for (name_old, old_param), (name_new, new_param) in zip(old_parameters.items(), new_parameters.items()):
-    #         if self.current_epoch < self.fixed_epoch:
-    #             # 计算差值
-    #             diff = torch.abs(old_param - new_param)
-    #             # 动态生成掩码
-    #             mask = (diff < lower_threshold) | (diff > upper_threshold)
-    #
-    #             # 在掩码部分中随机选择 5% 的位置进行 new_param 覆盖
-    #             mask_indices = torch.nonzero(mask).reshape(-1)  # 使用 reshape 替代 view
-    #             num_to_sample = int(self.sample_ratio * mask_indices.size(0))  # 5% 的掩码部分
-    #             if num_to_sample > 0:
-    #                 sampled_indices = random.sample(mask_indices.tolist(), num_to_sample)
-    #                 mask.view(-1)[sampled_indices] = False  # 取消这些位置的掩码，使用 new_param 覆盖
-    #         elif self.current_epoch == self.fixed_epoch:
-    #             # 记录掩码
-    #             diff = torch.abs(old_param - new_param)
-    #             mask = (diff < lower_threshold) | (diff > upper_threshold)
-    #             self.assignment_mask[name_old] = mask
-    #         else:
-    #             # 使用之前记录的掩码
-    #             mask = self.assignment_mask[name_old]
-    #
-    #         # 根据掩码更新参数
-    #         updated_param = torch.where(mask, old_param, new_param)
-    #         updated_parameters[name_old] = updated_param
-    #
-    #     return updated_parameters
-
-    # def update_parameters(self, old_parameters, new_parameters):
-    #     # 创建一个新的字典来存储更新后的参数
-    #     updated_parameters = OrderedDict()
-    #
-    #     if self.current_epoch <= self.fixed_epoch:
-    #         # 用于存储所有的差值
-    #         all_diffs = []
-    #
-    #         # 遍历所有的参数，计算差值并存储
-    #         for (name_old, old_param), (name_new, new_param) in zip(old_parameters.items(), new_parameters.items()):
-    #             assert name_old == name_new, "参数名称不匹配"
-    #             # 计算差值并展平为一维
-    #             diff = torch.abs(old_param - new_param)
-    #             all_diffs.append(diff.view(-1))  # 展平张量为一维
-    #
-    #         # 合并所有展平的差值
-    #         all_diffs_combined = torch.cat(all_diffs)
-    #
-    #         # 计算前 10% 和后 10% 分位数，作为阈值
-    #         lower_threshold = torch.quantile(all_diffs_combined, self.lower_quantile)
-    #         upper_threshold = torch.quantile(all_diffs_combined, self.upper_quantile)
-    #
-    #         # 在第100轮时创建掩码
-    #         if self.current_epoch == self.fixed_epoch:
-    #             self.assignment_mask = {}
-    #
-    #     # 遍历参数，使用已有的掩码或动态计算
-    #     for (name_old, old_param), (name_new, new_param) in zip(old_parameters.items(), new_parameters.items()):
-    #         if self.current_epoch < self.fixed_epoch:
-    #             # 计算差值
-    #             diff = torch.abs(old_param - new_param)
-    #             # 动态生成掩码
-    #             mask = (diff < lower_threshold) | (diff > upper_threshold)
-    #
-    #             # 在掩码部分中随机选择 5% 的位置进行 new_param 覆盖
-    #             mask_indices = torch.nonzero(mask).reshape(-1)  # 使用 reshape 替代 view
-    #             num_to_sample = int(self.sample_ratio * mask_indices.size(0))  # 5% 的掩码部分
-    #             if num_to_sample > 0:
-    #                 sampled_indices = random.sample(mask_indices.tolist(), num_to_sample)
-    #                 mask.view(-1)[sampled_indices] = False  # 取消这些位置的掩码，使用 new_param 覆盖
-    #         elif self.current_epoch == self.fixed_epoch:
-    #             # 记录掩码
-    #             diff = torch.abs(old_param - new_param)
-    #             mask = (diff < lower_threshold) | (diff > upper_threshold)
-    #             self.assignment_mask[name_old] = mask
-    #         else:
-    #             # 使用之前记录的掩码
-    #             mask = self.assignment_mask[name_old]
-    #
-    #         # 根据掩码更新参数
-    #         updated_param = torch.where(mask, old_param, new_param)
-    #         updated_parameters[name_old] = updated_param
-    #
-    #     return updated_parameters
-
-    # def update_parameters(self, old_parameters, new_parameters):
-    #     # 如果已经在该 epoch 执行过更新，则跳过
-    #     if hasattr(self, 'last_epoch') and self.last_epoch == self.current_epoch:
-    #         return self.updated_parameters
-    #
-    #     # 更新 last_epoch 为当前的 current_epoch
-    #     self.last_epoch = self.current_epoch
-    #
-    #     # 创建一个新的字典来存储更新后的参数
-    #     updated_parameters = OrderedDict()
-    #
-    #     if self.current_epoch <= self.fixed_epoch:
-    #         # 用于存储所有的差值
-    #         all_diffs = []
-    #         self.old_parameters = old_parameters
-    #         self.new_parameters = new_parameters
-    #
-    #         # 遍历所有的参数，计算差值并存储
-    #         for (name_old, old_param), (name_new, new_param) in zip(old_parameters.items(), new_parameters.items()):
-    #             assert name_old == name_new, "参数名称不匹配"
-    #             # 计算差值并展平为一维
-    #             diff = torch.abs(old_param - new_param)
-    #             all_diffs.append(diff.view(-1))  # 展平张量为一维
-    #
-    #         # 合并所有展平的差值
-    #         all_diffs_combined = torch.cat(all_diffs)
-    #
-    #         # 计算前 10% 和后 10% 分位数，作为阈值
-    #         self.lower_threshold = torch.quantile(all_diffs_combined, self.lower_quantile)
-    #         self.upper_threshold = torch.quantile(all_diffs_combined, self.upper_quantile)
-    #
-    #         # 在第 fixed_epoch 时创建掩码
-    #         if self.current_epoch == self.fixed_epoch:
-    #             self.assignment_mask = {}
-    #             self.cumulative_mask = {}  # 初始化累计掩码
-    #
-    #     # 遍历参数，使用已有的掩码或动态计算
-    #     for (name_old, old_param), (name_new, new_param) in zip(self.old_parameters.items(),
-    #                                                             self.new_parameters.items()):
-    #         if self.current_epoch < self.fixed_epoch:
-    #             # 阶段1：动态生成掩码并更新参数
-    #             diff = torch.abs(old_param - new_param)
-    #             mask = (diff < self.lower_threshold) | (diff > self.upper_threshold)
-    #
-    #             # 在掩码部分中随机选择 5% 的位置进行 new_param 覆盖
-    #             mask_indices = torch.nonzero(mask).reshape(-1)  # 使用 reshape 替代 view
-    #             num_to_sample = int(self.sample_ratio * mask_indices.size(0))  # 5% 的掩码部分
-    #             if num_to_sample > 0:
-    #                 sampled_indices = random.sample(mask_indices.tolist(), num_to_sample)
-    #                 mask.view(-1)[sampled_indices] = False  # 取消这些位置的掩码，使用 new_param 覆盖
-    #
-    #         elif self.fixed_epoch <= self.current_epoch < self.mid_epoch_end:
-    #             # 阶段2：逐步固定一部分参数
-    #             progress_ratio = (self.current_epoch - self.fixed_epoch + 1) / (self.mid_epoch_end - self.fixed_epoch)
-    #             diff = torch.abs(old_param - new_param)
-    #             mask = (diff < self.lower_threshold) | (diff > self.upper_threshold)
-    #
-    #             # 获取上一次的累计掩码或初始化为空
-    #             if name_old not in self.cumulative_mask:
-    #                 self.cumulative_mask[name_old] = torch.zeros_like(mask, dtype=torch.bool)
-    #
-    #             # 更新累计掩码比例
-    #             total_indices = torch.nonzero(mask).reshape(-1)
-    #             num_to_fix = int(progress_ratio * total_indices.size(0))  # 逐步增加固定比例
-    #             if num_to_fix > 0:
-    #                 new_indices = total_indices[:num_to_fix]
-    #                 self.cumulative_mask[name_old].view(-1)[new_indices] = True  # 累计更新固定掩码
-    #
-    #             # 更新 assignment_mask
-    #             self.assignment_mask[name_old] = self.cumulative_mask[name_old]
-    #
-    #         elif self.current_epoch >= self.mid_epoch_end:
-    #             # 阶段3：完全使用固定掩码
-    #             mask = self.assignment_mask[name_old]
-    #
-    #         # 根据掩码更新参数
-    #         updated_param = torch.where(mask, old_param, new_param)
-    #         updated_parameters[name_old] = updated_param
-    #
-    #     # 将更新后的参数存储到 self 中以便跳过重复更新
-    #     self.updated_parameters = updated_parameters
-    #
-    #     return updated_parameters
 
     @torch.no_grad()
     def evaluate(self, model: torch.nn.Module = None) -> Dict[str, float]:

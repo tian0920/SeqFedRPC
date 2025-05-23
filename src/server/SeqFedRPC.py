@@ -66,7 +66,7 @@ class FedCIPServer(FedAvgServer):
                 self.test()
 
             self.selected_clients = self.client_sample_stream[E]
-            client_params_cache, weights_cache = [], []
+            client_params_cache = []
             for client_id in self.selected_clients:
                 client_pers_params = self.generate_client_params(client_id)
                 (
@@ -84,7 +84,6 @@ class FedCIPServer(FedAvgServer):
                     verbose=((E + 1) % self.args.verbose_gap) == 0,
                 )
                 client_params_cache.append(client_params)
-                weights_cache.append(weight)
 
             self.update_client_params(client_params_cache)
             self.log_info()

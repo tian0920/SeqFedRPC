@@ -90,9 +90,6 @@ def get_fedavg_argparser() -> ArgumentParser:
     parser.add_argument("--save_fig", type=int, default=1)
     parser.add_argument("--save_metrics", type=int, default=1)
     parser.add_argument("--viz_win_name", type=str, required=False)
-    # ... existing arguments ...
-    #parser.add_argument("--personalization_proportion", type=float, default=0.1)
-    #parser.add_argument("--retain_personalized", type=bool, default=True)
 
     return parser
 
