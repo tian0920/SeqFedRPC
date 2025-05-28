@@ -123,67 +123,6 @@ def vectorize(
     elif isinstance(src, OrderedDict):
         return torch.cat([func(param).flatten() for param in src.values()])
 
-
-@torch.no_grad()
-def evalutate_model_fedfew(
-    current_epoch: int,
-    fixed_epoch: int,
-    old_parameters: Dict[str, torch.Tensor],
-    model: torch.nn.Module,
-    dataloader: DataLoader,
-    criterion=torch.nn.CrossEntropyLoss(reduction="sum"),
-    device=torch.device("cpu"),
-    type=0,
-) -> Tuple[float, float, int]:
-
-    model.eval()
-    correct = 0
-    loss = 0
-    sample_num = 0
-
-    for x, y in dataloader:
-        x, y = x.to(device), y.to(device)
-        if model.name == "DecoupledModel":
-            logit = model(x)
-        else:
-            logit_vae_list = model(x)
-            logit = logit_vae_list[-1]
-            # logit = model(x)
-            # max_contrib_layer = model.determine_max_contribution_layer(logit_vae_list, y)
-
-        # 对应修改后的损失函数
-        if current_epoch < fixed_epoch:
-            loss += criterion(logit, y, old_parameters.values()).item()
-        else:
-            loss += criterion(logit, y).item()
-
-        # 对应原损失函数：
-        # loss += criterion(logit, y).item()
-
-
-        pred = torch.argmax(logit, -1)
-
-        if type:
-            # 记录类别代码
-            correct_preds = (pred == y)
-            for label in y:
-                label = label.item()
-                if label not in class_correct_dict:
-                    class_correct_dict[label] = {"correct": 0, "total": 0}
-                class_correct_dict[label]["total"] += 1
-
-            for label, is_correct in zip(y, correct_preds):
-                label = label.item()
-                if is_correct.item():
-                    class_correct_dict[label]["correct"] += 1
-            print(json.dumps(class_correct_dict))
-            # 记录类别代码
-
-        correct += (pred == y).sum().item()
-        sample_num += len(y)
-    return loss, correct, sample_num
-
-
 def evalutate_model(
     model: torch.nn.Module,
     dataloader: DataLoader,

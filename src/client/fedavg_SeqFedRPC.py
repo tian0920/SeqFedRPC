@@ -13,7 +13,7 @@ from sklearn.cluster import KMeans
 
 PROJECT_DIR = Path(__file__).parent.parent.parent.absolute()
 
-from src.config.utils import trainable_params, evalutate_model, Logger, evalutate_model_fedfew
+from src.config.utils import trainable_params, evalutate_model, Logger
 from src.config.models import DecoupledModel
 from data.utils.constants import MEAN, STD
 from data.utils.datasets import DATASETS
@@ -38,9 +38,10 @@ class FedAvgClient:
         self.client_id: int = None
         self.assignment_mask = None  # 用于记录掩码
         self.fixed_epoch = 1
-        # self.mid_epoch_end = 110
         self.sample_ratio = 0
         self.grad_means = []  # 用于存储每轮梯度均值
+        self.lamda_ = 0
+        self.beta = 0.5
 
         # load dataset and clients' data indices
         try:
@@ -96,7 +97,6 @@ class FedAvgClient:
         }
         self.updated_parameters = {}
         self.opt_state_dict = {}
-        self.updated_params = {}
 
         self.optimizer = torch.optim.SGD(
             params=trainable_params(self.model),
@@ -110,11 +110,6 @@ class FedAvgClient:
         self.distribution_save_path = "distribution_results"
         os.makedirs(self.distribution_save_path, exist_ok=True)
 
-        self.best_assignment_mask = None
-        self.best_cluster_quality = float('inf')  # Initial quality set to infinity (lower is better)
-        self.update_counter = 0
-        self.has_switched_to_personalized = False  # 标志是否切换到个性化训练
-        self.clustering_done = False
 
     def load_dataset(self):
         """This function is for loading data indices for No.`self.client_id` client."""
@@ -191,14 +186,10 @@ class FedAvgClient:
         client_id: int,
         local_epoch: int,
         current_epoch: int,
-        # lower_quantile: float,
-        # upper_quantile:float,
         new_parameters: OrderedDict[str, torch.Tensor],
         return_diff=False,
         verbose=False,
     ) -> Tuple[Union[OrderedDict[str, torch.Tensor], List[torch.Tensor]], int, Dict]:
-        # self.lower_quantile = lower_quantile
-        # self.upper_quantile = upper_quantile
         self.client_id = client_id
         self.local_epoch = local_epoch
         self.current_epoch = current_epoch
@@ -239,12 +230,13 @@ class FedAvgClient:
                     logit_vae_list = self.model(x)
                     logit = logit_vae_list[-1]
                 if self.current_epoch < self.fixed_epoch:
-                    self.criterion = CustomLoss(lambda_=0.01, beta=10,
+                    criterion = CustomLoss(lambda_=self.lamda_, beta=self.beta,
                                                 theta_global=list(self.new_parameters.values())).to(self.device)
-                    loss = self.criterion(logit, y, self.old_parameters.values())
+                    loss = criterion(logit, y, list(self.model.parameters()))
+
                 else:
-                    self.criterion = torch.nn.CrossEntropyLoss(reduction='mean').to(self.device)
-                    loss = self.criterion(logit, y)
+                    criterion = torch.nn.CrossEntropyLoss(reduction='mean').to(self.device)
+                    loss = criterion(logit, y)
 
                 # 反向传播和优化
                 self.optimizer.zero_grad()
@@ -261,24 +253,17 @@ class FedAvgClient:
         self.optimizer.load_state_dict(
             self.opt_state_dict.get(self.client_id, self.init_opt_state_dict)
         )
-
-        # if self.current_epoch < self.fixed_epoch:
-        #     self.model.load_state_dict(new_parameters, strict=False)
-        # # personal params would overlap the dummy params from new_parameters from the same layers
-        # else:
-        #     updated_parameters = self.update_parameters(self.old_parameters, new_parameters)
-        #     self.model.load_state_dict(updated_parameters, strict=False)
-
-        updated_parameters = self.update_parameters(self.old_parameters, new_parameters)
-        self.model.load_state_dict(updated_parameters, strict=False)
+        if self.current_epoch > 0 and self.current_epoch < self.fixed_epoch:
+            updated_parameters = self.update_parameters(self.old_parameters, new_parameters)
+            self.model.load_state_dict(updated_parameters, strict=False)
+        else:
+            self.model.load_state_dict(self.new_parameters, strict=False)
 
 
     def update_parameters(self, old_parameters, new_parameters):
         # 创建一个字典来存储更新后的参数
         updated_parameters = OrderedDict()
-
-        # 如果是第一次更新，只计算梯度并判断是否需要个性化训练
-        if not self.has_switched_to_personalized:
+        if self.current_epoch < self.fixed_epoch:
             # 计算每轮梯度均值
             all_grads = []
             all_diffs = []
@@ -293,42 +278,17 @@ class FedAvgClient:
             for (name_old, old_param), (name_new, new_param) in zip(old_parameters.items(), new_parameters.items()):
                 assert name_old == name_new, "Parameter names do not match"
                 # Calculate the difference and flatten to 1D
-                diff = torch.abs(old_param - new_param)
+                diff = torch.abs((old_param - new_param) / (old_param + 1e-8))
                 all_diffs.append(diff.view(-1))  # Flatten tensor to 1D
 
             all_diffs_combined = torch.cat(all_diffs).cpu()  # Uncomment for histogram plotting
             # self._analyze_and_plot_distribution(all_diffs_combined)  # Optional plotting
 
-            print(f"Update {self.update_counter}: Mean Gradient Value = {epoch_grad_mean:.6f}")
-
-            # 判断是否需要切换到个性化训练
-            if len(self.grad_means) > 1:
-                prev_grad_mean = self.grad_means[-2]
-                if prev_grad_mean > 0:
-                    print("Significant gradient change detected. Switching to personalized training mode.")
-                    self.has_switched_to_personalized = True
-                else:
-                    print("Performing standard training...")
-                    self.has_switched_to_personalized = False
-
-            # 如果没有切换到个性化训练，直接返回旧参数
-            if not self.has_switched_to_personalized:
-                return old_parameters
-
-        # 聚类与掩码生成逻辑（仅执行一次）
-        # if self.update_counter < self.fixed_epoch:
-        if not self.clustering_done:
-            # all_params_combined = []
-            # for name, param in old_parameters.items():
-            #     all_params_combined.append(param.view(-1))
-            #
-            # # 合并所有参数
-            # all_params_combined = torch.cat(all_params_combined).cpu().numpy()
+            print(f"Update {self.current_epoch}: Mean Gradient Value = {epoch_grad_mean:.6f}")
 
             # K-means 聚类
             kmeans = KMeans(n_clusters=2, random_state=0, n_init=10).fit(abs(all_diffs_combined.numpy()).reshape(-1, 1))
             labels = kmeans.labels_
-            self.clustering_done = True  # 标记聚类已完成
 
             # 确定最小和最大值的簇
             cluster_centers = kmeans.cluster_centers_.squeeze()
@@ -346,7 +306,7 @@ class FedAvgClient:
             # 确定各类对应的比例
             small_class_ratio = ratios[sorted_indices[0]]  # 最小簇
             large_class_ratio = ratios[sorted_indices[-1]]  # 最大簇
-            print(small_class_ratio, large_class_ratio)
+            print(self.current_epoch, small_class_ratio, large_class_ratio)
 
             # remaining_class_ratio = ratios[sorted_indices[1]]  # 中间簇
             #
@@ -380,15 +340,14 @@ class FedAvgClient:
 
             print("Clustering completed. Assignment mask generated.")
 
-        # 使用掩码更新参数
-        for name, (old_param, new_param) in zip(old_parameters.keys(),
-                                                zip(old_parameters.values(), new_parameters.values())):
-            mask = self.assignment_mask[name]
-            updated_param = torch.where(mask, old_param, new_param)
-            updated_parameters[name] = updated_param
+            # 使用掩码更新参数
+            for name, (old_param, new_param) in zip(old_parameters.keys(),
+                                                    zip(old_parameters.values(), new_parameters.values())):
+                mask = self.assignment_mask[name]
+                updated_param = torch.where(mask, old_param, new_param)
+                updated_parameters[name] = updated_param
 
-        self.update_counter += 1  # 更新计数器
-        return updated_parameters
+            return updated_parameters
 
 
     def _analyze_and_plot_distribution(self, all_diffs_combined):
@@ -470,18 +429,10 @@ class FedAvgClient:
         train_loss, test_loss = 0, 0
         train_correct, test_correct = 0, 0
         train_sample_num, test_sample_num = 0, 0
-        if self.current_epoch < self.fixed_epoch:
-            criterion = CustomLoss(lambda_=0.01, beta=10, theta_global=list(self.new_parameters.values())).to(
-                self.device)
-        else:
-            criterion = torch.nn.CrossEntropyLoss(reduction="sum")
-
+        criterion = torch.nn.CrossEntropyLoss(reduction="sum")
 
         if len(self.testset) > 0 and self.args.eval_test:
-            test_loss, test_correct, test_sample_num = evalutate_model_fedfew(
-                current_epoch=self.current_epoch,
-                fixed_epoch=self.fixed_epoch,
-                old_parameters=self.old_parameters,
+            test_loss, test_correct, test_sample_num = evalutate_model(
                 model=eval_model,
                 dataloader=self.testloader,
                 criterion=criterion,
@@ -489,7 +440,7 @@ class FedAvgClient:
             )
 
         if len(self.trainset) > 0 and self.args.eval_train:
-            train_loss, train_correct, train_sample_num = evalutate_model_fedfew(
+            train_loss, train_correct, train_sample_num = evalutate_model(
                 model=eval_model,
                 dataloader=self.trainloader,
                 criterion=criterion,
@@ -557,7 +508,8 @@ class FedAvgClient:
                 else:
                     logit_vae_list = self.model(x)
                     logit = logit_vae_list[-1]
-                loss = self.criterion(logit, y)
+                criterion = torch.nn.CrossEntropyLoss(reduction='mean').to(self.device)
+                loss = criterion(logit, y)
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
@@ -574,9 +526,6 @@ class CustomLoss(torch.nn.Module):
         # 基础交叉熵损失
         ce_loss = self.cross_entropy(outputs, targets)
 
-        # 稀疏化项: L1 正则化
-        l1_regularization = self.lambda_ * sum(torch.sum(torch.abs(param)) for param in model_params)
-
         # 差值项: 个性化差值双侧拉伸
         difference_loss = 0
         for param_local, param_global in zip(model_params, self.theta_global):
@@ -584,5 +533,5 @@ class CustomLoss(torch.nn.Module):
             difference_loss -= torch.sum(self.beta * torch.abs(diff)**2)  # 这里使用平方作为差值拉伸
 
         # 总损失
-        total_loss = ce_loss + l1_regularization + difference_loss
+        total_loss = ce_loss + difference_loss
         return total_loss

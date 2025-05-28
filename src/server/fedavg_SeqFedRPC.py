@@ -254,8 +254,6 @@ class FedAvgServer:
                 client_id=client_id,
                 local_epoch=self.clients_local_epoch[client_id],
                 current_epoch=self.current_epoch,
-                # lower_quantile=self.lower_quantile,
-                # upper_quantile=self.upper_quantile,
                 new_parameters=client_local_params,
                 verbose=((self.current_epoch + 1) % self.args.verbose_gap) == 0,
             )
