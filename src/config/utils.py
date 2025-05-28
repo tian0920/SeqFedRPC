@@ -154,10 +154,7 @@ def evalutate_model(
 
             logit_vae_list = model(x)
             logit = logit_vae_list[-1]
-            # logit = model(x)
 
-            # max_contrib_layer = model.determine_max_contribution_layer(logit_vae_list, y)
-            # print
         loss += criterion(logit, y).item()
 
         pred = torch.argmax(logit, -1)
