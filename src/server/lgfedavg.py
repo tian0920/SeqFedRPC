@@ -14,7 +14,7 @@ def get_lgfedavg_argparser() -> ArgumentParser:
 class LGFedAvgServer(FedAvgServer):
     def __init__(
         self,
-        algo: str = "LG-FedAvg-1.0",
+        algo: str = "LG-FedAvg",
         args: Namespace = None,
         unique_model=False,
         default_trainer=False,

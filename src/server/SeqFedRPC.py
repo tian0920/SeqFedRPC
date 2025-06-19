@@ -12,7 +12,7 @@ def get_fedcip_argparser() -> ArgumentParser:
 class FedCIPServer(FedAvgServer):
     def __init__(
             self,
-            algo: str = "SeqFedRPC_0.01",
+            algo: str = "0.1",
             args: Namespace = None,
             unique_model=False,
             default_trainer=True,

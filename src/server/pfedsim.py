@@ -11,7 +11,7 @@ from src.config.utils import trainable_params
 
 def get_pfedsim_argparser() -> ArgumentParser:
     parser = get_fedavg_argparser()
-    parser.add_argument("-wr", "--warmup_round", type=float, default=0.05)
+    parser.add_argument("-wr", "--warmup_round", type=float, default=0.5)
     return parser
 
 
@@ -124,7 +124,6 @@ class pFedSimServer(FedAvgServer):
             client_params_i = OrderedDict(
                 zip(self.trainable_params_name, self.client_trainable_params[i])
             )
-            print(client_params_i)
             for j in self.selected_clients[idx_i + 1 :]:
                 client_params_j = OrderedDict(
                     zip(self.trainable_params_name, self.client_trainable_params[j])

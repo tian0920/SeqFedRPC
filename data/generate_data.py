@@ -166,7 +166,7 @@ if __name__ == "__main__":
         default="cifar10",
     )
     parser.add_argument("--iid", type=int, default=0)
-    parser.add_argument("-cn", "--client_num", type=int, default=20)
+    parser.add_argument("-cn", "--client_num", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--split", type=str, choices=["sample", "user"], default="sample"
@@ -174,7 +174,7 @@ if __name__ == "__main__":
     parser.add_argument("-f", "--fraction", type=float, default=0.5)
     parser.add_argument("-c", "--classes", type=int, default=0)
     parser.add_argument("-s", "--shards", type=int, default=0)
-    parser.add_argument("-a", "--alpha", type=float, default=0)
+    parser.add_argument("-a", "--alpha", type=float, default=1.0)
     parser.add_argument("-ls", "--least_samples", type=int, default=40)
 
     # For synthetic data only

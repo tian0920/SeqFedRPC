@@ -154,13 +154,13 @@ class FedAvgClient:
         Args:
             new_parameters (OrderedDict[str, torch.Tensor]): Parameters of FL model.
         """
-        # personal_parameters = self.personal_params_dict.get(
-        #     self.client_id, self.init_personal_params_dict
-        # )
-        personal_parameters = {
-            key: param.clone().detach()
-            for key, param in self.model.state_dict(keep_vars=True).items() if key in self.personal_params_name
-        }
+        personal_parameters = self.personal_params_dict.get(
+            self.client_id, self.init_personal_params_dict
+        )
+        # personal_parameters = {
+        #     key: param.clone().detach()
+        #     for key, param in self.model.state_dict(keep_vars=True).items() if key in self.personal_params_name
+        # }
         self.optimizer.load_state_dict(
             self.opt_state_dict.get(self.client_id, self.init_opt_state_dict)
         )
@@ -360,36 +360,6 @@ class FedAvgClient:
             after = self.evaluate()
         return {"before": before, "after": after}
 
-    def test_1(
-        self, client_id: int, new_parameters: OrderedDict[str, torch.Tensor]
-    ) -> Dict[str, Dict[str, float]]:
-        """Test function. Only be activated while in FL test round.
-
-        Args:
-            client_id (int): The ID of client.
-            new_parameters (OrderedDict[str, torch.Tensor]): The FL model parameters.
-
-        Returns:
-            Dict[str, Dict[str, float]]: the evalutaion metrics stats.
-        """
-        self.client_id = client_id
-        self.load_dataset()
-
-        before = {
-            "train_loss": 0,
-            "train_correct": 0,
-            "train_size": 1.0,
-            "test_loss": 0,
-            "test_correct": 0,
-            "test_size": 1.0,
-        }
-        after = deepcopy(before)
-
-        before = self.evaluate()
-
-        self.set_parameters(new_parameters)
-        after = self.evaluate()
-        return {"before": before, "after": after}
 
     def finetune(self):
         """
